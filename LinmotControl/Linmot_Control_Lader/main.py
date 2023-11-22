@@ -3,7 +3,43 @@ from LinmotController import *
 import time
 from tkinter import messagebox
 import math
+import threading
+import sys
+import trace
+
 fields = ('Acceleration[m/s^2]', 'Frequency[hertz]', 'Phase[1]', 'Length of time series[s]','Amplitude[mm]')
+
+
+
+class thread_trace(threading.Thread):
+  def __init__(self, *args, **keywords):
+    threading.Thread.__init__(self, *args, **keywords)
+    self.killed = False
+ 
+  def start(self):
+    self.__run_backup = self.run
+    self.run = self.__run      
+    threading.Thread.start(self)
+ 
+  def __run(self):
+    sys.settrace(self.globaltrace)
+    self.__run_backup()
+    self.run = self.__run_backup
+ 
+  def globaltrace(self, frame, event, arg):
+    if event == 'call':
+      return self.localtrace
+    else:
+      return None
+ 
+  def localtrace(self, frame, event, arg):
+    if self.killed:
+      if event == 'line':
+        raise SystemExit()
+    return self.localtrace
+ 
+  def kill(self):
+    self.killed = True
 
 def startup():
     print('Turning on...')
@@ -13,6 +49,18 @@ def startup():
     messagehandler(2,0,0,0,0)
     time.sleep(5)
     print("Start up complete")
+
+def run(entries):
+    global t
+    t = thread_trace(target = operation, args=(entries,))
+    t.start()
+
+def stop():
+    t.kill()
+    t.join()
+    if not t.is_alive():
+        print('Thread killed')
+
 def operation(entries):
     acceleration = float(entries['Acceleration[m/s^2]'].get())
     if acceleration  > 9.81:
@@ -64,7 +112,8 @@ def makeform(root, fields):
     entries['Frequency[hertz]'].insert(0, "input [0,5]")
     return entries
 
-if __name__ == '__main__':
+def start_gui():
+    global root
     root = tk.Tk()
     root.title("Control of motor")
     ents = makeform(root, fields)
@@ -72,10 +121,18 @@ if __name__ == '__main__':
            command=(lambda: startup()))
     b1.pack(side=tk.LEFT, padx=5, pady=5)
     b2 = tk.Button(root, text='Start',
-           command=(lambda e=ents:operation(e)))
+           command=(lambda e=ents:run(e)))
     b2.pack(side=tk.LEFT, padx=5, pady=5)
     b3 = tk.Button(root, text='Quit', command=root.quit)
     b3.pack(side=tk.LEFT, padx=5, pady=5)
-    b4 = tk.Button(root, text='Stop', command=root.quit)
+    b4 = tk.Button(root, text='Stop', command=refresh)
     b4.pack(side=tk.LEFT, padx=5, pady=5)
     root.mainloop()
+
+if __name__ == '__main__':
+    def refresh():
+        stop()
+        root.destroy()
+        start_gui()
+    start_gui()
+    
