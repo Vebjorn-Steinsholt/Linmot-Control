@@ -23,7 +23,7 @@ def operation(entries):
         messagebox.showerror(title = 'Invalid input', message='Frequency  must be smaller than 5 hertz')
         raise Exception("Stopping program")
     amplitude = 1000*acceleration / ((2 * math.pi * frequency)**2)
-    if amplitude > 120:
+    if amplitude > 95:
         messagebox.showerror(title='Invalid input', message='Given acceleration and frequency gives amplitude out of bounds')
         raise Exception("Stopping program")
     if (amplitude/1000)*frequency*2*math.pi >= 2:
