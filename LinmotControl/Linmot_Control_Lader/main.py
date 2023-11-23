@@ -120,12 +120,12 @@ def start_gui():
     b1 = tk.Button(root, text='Init',
            command=(lambda: startup()))
     b1.pack(side=tk.LEFT, padx=5, pady=5)
-    b2 = tk.Button(root, text='Start',
+    b2 = tk.Button(root, text='Start',bg = 'green', fg = 'white',
            command=(lambda e=ents:run(e)))
     b2.pack(side=tk.LEFT, padx=5, pady=5)
     b3 = tk.Button(root, text='Quit', command=root.quit)
     b3.pack(side=tk.LEFT, padx=5, pady=5)
-    b4 = tk.Button(root, text='Stop', command=refresh)
+    b4 = tk.Button(root, text='Stop',bg = 'red', fg = 'white', command=refresh)
     b4.pack(side=tk.LEFT, padx=5, pady=5)
     root.mainloop()
 
