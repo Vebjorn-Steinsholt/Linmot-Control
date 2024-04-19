@@ -24,14 +24,27 @@ float returnFloatPos;
 //Creating variables to control/set motion commands
 int choice = 0;
 int prevChoice = 0;
-int targetPos = 0;
-int maxVel = 0;
-int Acceleration = 0;
-int Deceleration = 0;
+long targetPos = 0;
+unsigned long maxVel = 0;
+unsigned long Acceleration = 0;
+unsigned long Deceleration = 0;
 int commandChoice = 0;
 int stopGoToZero = 0;
 byte txBuf[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
+union long_pack{
+  long l;
+  byte b[4];
+};
+union unsigned_long_pack{
+  unsigned long l;
+  byte b[4];
+};
+
+long_pack pos;
+unsigned_long_pack vel;
+unsigned_long_pack acc;
+unsigned_long_pack dacc;
 
 //Ethernet/UDP stuff
 // Enter a MAC address and IP address for your controller below. The IP address will be dependent on your local network:
@@ -42,7 +55,7 @@ IPAddress myDns(8, 8, 8, 8);
 
 const unsigned int localPort = 8888;      // local port to listen on
 
-const byte remoteIp[] = {192,168,1,199};  //This is the IP of the pc that communicates by UDP(HLCC)
+const byte remoteIp[] = {192,168,1,198};  //This is the IP of the pc that communicates by UDP(HLCC) 
 
 // An EthernetUDP instance to let us send and receive packets over UDP
 EthernetUDP Udp;
@@ -132,16 +145,16 @@ int listenToUdp(){
 
     //Scaling variables from UDP to make some common sense: pos=mm, V=m/s, acc/dcc=m/s^2. These are the units you send from UDP source
     choice        = packetVal_1;          //Valid choices: 1-6
-    targetPos     = packetVal_2*10;       //Wanted position in millimeters
-    maxVel        = packetVal_3*1000;     //Maximum velocity in m/s
-    Acceleration  = packetVal_4*10;       //Acceleration in m/s^2
-    Deceleration  = packetVal_5*10;       //Deceleration in m/s^2
+    targetPos     = packetVal_2*10000;       //Wanted position in millimeters
+    maxVel        = packetVal_3*1000000;     //Maximum velocity in m/s
+    Acceleration  = packetVal_4*100000;       //Acceleration in m/s^2
+    Deceleration  = packetVal_5*100000;       //Deceleration in m/s^2
     stopGoToZero  = packetVal_6;          //TODO: If this variable goes high, have the motor go to zero and then turn it off? or something similar...
 
 //    Serial.println(F("Receiving from python.."));
 //    Serial.print(choice);
 //    Serial.print(F(" "));
-//    Serial.print(targetPos);
+//  Serial.print(targetPos);
 //    Serial.print(F(" "));
 //    Serial.print(maxVel);
 //    Serial.print(F(" "));
@@ -204,6 +217,17 @@ void askPosition(int nodeID){
 
 //Function to send setpoint to drive
 void send_VAI_16Bit_gotoPos(int nodeID, int targetPos,int maxVelocity,int Acceleration,int Deceleration){
+  //Serial.print("x:");
+  //Serial.print(targetPos);
+  //Serial.print(",");
+  //Serial.print("v:");
+  //Serial.print(maxVelocity);
+  //Serial.print(",");
+  //Serial.print("a:");
+  //Serial.print(Acceleration);
+  //Serial.print(",");
+  //Serial.print("d:");
+  //Serial.println(Deceleration);
   
   //Setting the canid, header and control word
   int CANID_PDO1 = 0x200 + nodeID;   //Can_id = COB_ID + node_ID(200 + 4  for pdo1)   Here you send the control word, mc-header, target position and maximum velocity
@@ -225,6 +249,46 @@ void send_VAI_16Bit_gotoPos(int nodeID, int targetPos,int maxVelocity,int Accele
   byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
 }
 
+//Function to send setpoint to drive
+void send_VAI_gotoPos(int nodeID, long targetPos,unsigned long maxVelocity,unsigned long Acceleration, unsigned long Deceleration){
+ // Serial.print("x:");
+  //Serial.print(targetPos);
+  //Serial.print(",");
+  //Serial.print("v:");
+  //Serial.print(maxVelocity);
+  //Serial.print(",");
+  //Serial.print("a:");
+  //Serial.print(Acceleration);
+  //Serial.print(",");
+  //Serial.print("d:");
+  //Serial.println(Deceleration);
+  pos.l = targetPos;
+  vel.l = maxVelocity;
+  acc.l = Acceleration;
+  dacc.l = Deceleration;
+
+  //Setting the canid, header and control word
+  int CANID_PDO1 = 0x200 + nodeID;   //Can_id = COB_ID + node_ID(200 + 4  for pdo1)   Here you send the control word, mc-header, target position and maximum velocity
+  int CANID_PDO2 = 0x300 + nodeID;   //Can_id = COB_ID + node_ID(300 + 4  for pdo2)   Here you send maximum velocity
+  int CANID_PDO3 = 0x400 + nodeID;   //Can_id = COB_ID + node_ID(400 + 4  for pdo3)   Here you send Acceleration and Deceleration
+  byte cmdHeader[] = {0x01, 0x01};
+  byte ctrlWord[] = {0x00,0x3f};
+
+  byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
+  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+
+  //creating the array of data to be transmitted
+  byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0],pos.b[0],pos.b[1],pos.b[2],pos.b[3]};
+  byte sendDataArray_PDO2[] = {vel.b[0],vel.b[1],vel.b[2],vel.b[3],acc.b[0],acc.b[1],acc.b[2],acc.b[3]};
+  byte sendDataArray_PDO3[] = {dacc.b[0],dacc.b[1],dacc.b[2],dacc.b[3], 0x00, 0x00, 0x00, 0x00};
+
+  //Sending the data with sync message at the end
+  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
+  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);
+  send_Msg(CANID_PDO3, 0, 8, sendDataArray_PDO3);    
+  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+}
 //Function to send sine motion command to drive
 void send_SIN_VA_GoToPos(int nodeID, byte targetPos[],byte maxVelocity[], byte Acceleration[], byte Deceleration[]){
   
@@ -279,9 +343,10 @@ void sendHoming(){
 //Function to put drive in operational mode
 void operationalMode(){
   byte sendDataArray[] = {0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};            //0x01 is the command for putting device in operational mode, and 0x04 is the node-ID
-  send_Msg(0x00, 0, 2, sendDataArray);  
-  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command   
+  send_Msg(0x000, 0, 2, sendDataArray);  
+  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
 }
+
 
 //Function to switch on
 void switchOn(){
@@ -375,7 +440,7 @@ void loop() {
   
   if(listenToUdp() != 0){
       
-      if(choice == 1 && prevChoice != 1){
+      if(choice == 9 && prevChoice != 9){
         prevChoice = choice;
         Serial.println(F("operational mode.."));
         operationalMode();  
@@ -388,7 +453,7 @@ void loop() {
       if(choice == 3){
         prevChoice = choice;
         //Serial.println(F("go to pos..."));
-        send_VAI_16Bit_gotoPos(0x04, targetPos, maxVel, Acceleration, Deceleration);  
+        send_VAI_gotoPos(0x04, targetPos, maxVel, Acceleration, Deceleration);  
       }
       if(choice == 4 && prevChoice != 4){
         prevChoice = choice;
@@ -400,23 +465,19 @@ void loop() {
         Serial.println(F("switch off drive.."));
         switchOff();  
       }
+      if(choice == 8 && prevChoice != 8){
+        prevChoice = choice;
+        send_SIN_VA_GoToPos(0x04, targetPos, maxVel, Acceleration, Deceleration);  
+      }
       if(choice == 6){
         prevChoice = choice;
         //Serial.println(F("Getting position.."));
         askPosition(0x04);  
       }
-      if(choice == 7 && prevChoice != 7){
+      if(choice == 1 && prevChoice != 1){
         prevChoice = choice;
-        Serial.println(F("Receiving from python.."));
-        Serial.print(choice);
-        Serial.print(F(" "));
-        Serial.print(targetPos);
-        Serial.print(F(" "));
-        Serial.print(maxVel);
-        Serial.print(F(" "));
-        Serial.print(Acceleration);
-        Serial.print(F(" "));
-        Serial.println(Deceleration);
+        Serial.println(F("operational mode.."));
+        operationalMode();  
       } 
   }
 
