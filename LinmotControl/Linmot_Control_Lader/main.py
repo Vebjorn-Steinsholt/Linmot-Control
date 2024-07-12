@@ -6,7 +6,10 @@ import math
 import threading
 import sys
 import trace
-
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import (
+     FigureCanvasTkAgg)
 fields = ('Acceleration[m/s^2]', 'Frequency[hertz]', 'Phase[1]', 'Length of time series[s]','Amplitude[mm]')
 
 
@@ -60,6 +63,47 @@ def stop():
     t.join()
     if not t.is_alive():
         print('Thread killed')
+
+
+def check(entries):
+    #intialize figure 
+    fig, (ax1,ax2) = plt.subplots(1, 2, sharey=False)
+    fig.tight_layout(pad = 3.0)
+    #create canvas
+    canvas = FigureCanvasTkAgg(fig, master = root)
+    canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+    #plot the data
+
+    time = int(entries['Length of time series[s]'].get())
+    acceleration = float(entries['Acceleration[m/s^2]'].get())
+    frequency = float(entries['Frequency[hertz]'].get())
+    amplitude = 1000*acceleration / ((2 * math.pi * frequency)**2)
+    omega = float(2 * math.pi * frequency)
+    t = np.arange(0, time, .01)
+    phase =  float(entries['Phase[1]'].get())
+
+    #Position 
+    ax1.plot(t, amplitude*np.sin(omega*t+phase))
+    ax1.set_ylabel('x(t) [mm]')
+    ax1.set_title('Position')
+    ax1.legend(['x(t)'])
+    ax1.set_xlabel('t [s]')
+    ax1.hlines(y=95, xmin=0, xmax=time, linewidth=2, color='r', label = "Upper Limit")
+    ax1.hlines(y=-95, xmin=0, xmax=time, linewidth=2, color='r', label = "Lower Limit")
+
+    #Velocity
+    ax2.plot(t, (amplitude/1000)*omega*np.cos(omega*t+phase), color = 'y')
+    ax2.set_ylabel('v(t) [m/s]')
+    ax2.set_title('velocity')
+    ax2.legend(['v(t)'])
+    ax2.set_xlabel('t [s]')
+    ax2.hlines(y=2, xmin=0, xmax=time, linewidth=2, color='r', label = "Upper Limit")
+    ax2.hlines(y=-2, xmin=0, xmax=time, linewidth=2, color='r', label = "Lower Limit")
+
+    canvas.draw()
+ 
+
+
 
 def operation(entries):
     acceleration = float(entries['Acceleration[m/s^2]'].get())
@@ -127,11 +171,20 @@ def start_gui():
     b3.pack(side=tk.LEFT, padx=5, pady=5)
     b4 = tk.Button(root, text='Stop',bg = 'red', fg = 'white', command=refresh)
     b4.pack(side=tk.LEFT, padx=5, pady=5)
+    b5 = tk.Button(root, text='Check Values',
+           command=(lambda e=ents:check(e)))
+    b5.pack(side=tk.LEFT, padx=5, pady=5)
+    b6 = tk.Button(root, text='Clear Graph(s)', command=refresh_gui)
+    b6.pack(side=tk.LEFT, padx=5, pady=5)
+
     root.mainloop()
 
 if __name__ == '__main__':
     def refresh():
         stop()
+        root.destroy()
+        start_gui()
+    def refresh_gui():
         root.destroy()
         start_gui()
     start_gui()
