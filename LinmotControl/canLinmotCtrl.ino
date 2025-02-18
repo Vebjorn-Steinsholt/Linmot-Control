@@ -1,9 +1,9 @@
 //Linmot UDP2CAN-BUS Controller
 //Robert Opland
 //NTNU - Norwegian University of Science and Technology
-//Version 0.1
-//Still some cleaning up to do, and some optimization would be nice...
-
+//Version 1.1
+//Features added by Vebjørn Steinsholt
+//NTNU - Norwegian University of Science and Technology
 #include <mcp_can.h>    //Using this library for the canbus communication
 #include <SPI.h>
 #include "Wire.h"
@@ -29,7 +29,8 @@ unsigned long maxVel = 0;
 unsigned long Acceleration = 0;
 unsigned long Deceleration = 0;
 int commandChoice = 0;
-int stopGoToZero = 0;
+int targetForce = 0;
+int forceLimit = 0;
 byte txBuf[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 union long_pack{
@@ -55,7 +56,7 @@ IPAddress myDns(8, 8, 8, 8);
 
 const unsigned int localPort = 8888;      // local port to listen on
 
-const byte remoteIp[] = {192,168,1,198};  //This is the IP of the pc that communicates by UDP(HLCC) 
+const byte remoteIp[] = {192,168,1,94};  //This is the IP of the pc that communicates by UDP(HLCC) 
 
 // An EthernetUDP instance to let us send and receive packets over UDP
 EthernetUDP Udp;
@@ -89,13 +90,14 @@ void tryReconnectUDP(){
 int listenToUdp(){
   
   // buffer for receiving data from UDP
-  char packetBuffer[UDP_TX_PACKET_MAX_SIZE];  // buffer to hold incoming packet  
+  char packetBuffer[32];  // buffer to hold incoming packet  
   float packetVal_1 = 0;
   float packetVal_2 = 0;
   float packetVal_3 = 0;
   float packetVal_4 = 0;
   float packetVal_5 = 0;
   float packetVal_6 = 0;
+  float packetVal_7 = 0;
   
   // if there's data available, read a packet
   int packetSize = Udp.parsePacket();
@@ -107,10 +109,11 @@ int listenToUdp(){
     uint8_t * dataPtr_3 = (uint8_t *) &packetVal_3;
     uint8_t * dataPtr_4 = (uint8_t *) &packetVal_4;
     uint8_t * dataPtr_5 = (uint8_t *) &packetVal_5;
-    uint8_t * dataPtr_6 = (uint8_t *) &packetVal_6;    
+    uint8_t * dataPtr_6 = (uint8_t *) &packetVal_6;
+    uint8_t * dataPtr_7 = (uint8_t *) &packetVal_7;        
     
     //read the packet into packetBuffer
-    Udp.read(packetBuffer, UDP_TX_PACKET_MAX_SIZE);     
+    Udp.read(packetBuffer, 32);     
 
     //Swapping from big to little endian and turning into float32. to turn of the swap match the arrays: dataPtr[0] = packetBuffer[0]
     dataPtr_1[0] = packetBuffer[3];
@@ -143,26 +146,20 @@ int listenToUdp(){
     dataPtr_6[2] = packetBuffer[21];
     dataPtr_6[3] = packetBuffer[20];
 
+    dataPtr_7[0] = packetBuffer[27];
+    dataPtr_7[1] = packetBuffer[26];
+    dataPtr_7[2] = packetBuffer[25];
+    dataPtr_7[3] = packetBuffer[24];
+
     //Scaling variables from UDP to make some common sense: pos=mm, V=m/s, acc/dcc=m/s^2. These are the units you send from UDP source
     choice        = packetVal_1;          //Valid choices: 1-6
     targetPos     = packetVal_2*10000;       //Wanted position in millimeters
     maxVel        = packetVal_3*1000000;     //Maximum velocity in m/s
     Acceleration  = packetVal_4*100000;       //Acceleration in m/s^2
     Deceleration  = packetVal_5*100000;       //Deceleration in m/s^2
-    stopGoToZero  = packetVal_6;          //TODO: If this variable goes high, have the motor go to zero and then turn it off? or something similar...
+    targetForce  = packetVal_6*10;          //TODO: If this variable goes high, have the motor go to zero and then turn it off? or something similar...
+    forceLimit = packetVal_7*10;
 
-//    Serial.println(F("Receiving from python.."));
-//    Serial.print(choice);
-//    Serial.print(F(" "));
-//  Serial.print(targetPos);
-//    Serial.print(F(" "));
-//    Serial.print(maxVel);
-//    Serial.print(F(" "));
-//    Serial.print(Acceleration);
-//    Serial.print(F(" "));
-//    Serial.println(Deceleration);
-    
-    
     return(packetSize);        
   } 
 }
@@ -197,13 +194,6 @@ void send_Msg(int Can_Id, int ExtID, int dL, byte dataArray[]){
   int dataLength = dL;
   byte msgData[dataLength] = {int(dataArray[0]),int(dataArray[1]),int(dataArray[2]),int(dataArray[3]),int(dataArray[4]),int(dataArray[5]),int(dataArray[6]),int(dataArray[7])}; 
   byte sndStat = CAN0.sendMsgBuf(CANID, external, dataLength, msgData);
-//  char bufferMsg[100];
-//  if(sndStat == CAN_OK){
-//    sprintf(bufferMsg, "Send standard ID:   0x%02X  DLC: %u  Data: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X", CANID, dataLength,(msgData[0]),(msgData[1]),(msgData[2]),(msgData[3]),(msgData[4]),(msgData[5]),(msgData[6]),(msgData[7]));
-//    Serial.println(bufferMsg);  
-//  }else{
-//    Serial.println(F("Error Sending Message..."));
-//  }    
 }
 
 //Get position from actuator
@@ -217,18 +207,6 @@ void askPosition(int nodeID){
 
 //Function to send setpoint to drive
 void send_VAI_16Bit_gotoPos(int nodeID, int targetPos,int maxVelocity,int Acceleration,int Deceleration){
-  //Serial.print("x:");
-  //Serial.print(targetPos);
-  //Serial.print(",");
-  //Serial.print("v:");
-  //Serial.print(maxVelocity);
-  //Serial.print(",");
-  //Serial.print("a:");
-  //Serial.print(Acceleration);
-  //Serial.print(",");
-  //Serial.print("d:");
-  //Serial.println(Deceleration);
-  
   //Setting the canid, header and control word
   int CANID_PDO1 = 0x200 + nodeID;   //Can_id = COB_ID + node_ID(200 + 4  for pdo1)   Here you send the control word, mc-header, target position and maximum velocity
   int CANID_PDO2 = 0x300 + nodeID;   //Can_id = COB_ID + node_ID(300 + 4  for pdo2)   Here you send Acceleration and Deceleration
@@ -251,17 +229,6 @@ void send_VAI_16Bit_gotoPos(int nodeID, int targetPos,int maxVelocity,int Accele
 
 //Function to send setpoint to drive
 void send_VAI_gotoPos(int nodeID, long targetPos,unsigned long maxVelocity,unsigned long Acceleration, unsigned long Deceleration){
- // Serial.print("x:");
-  //Serial.print(targetPos);
-  //Serial.print(",");
-  //Serial.print("v:");
-  //Serial.print(maxVelocity);
-  //Serial.print(",");
-  //Serial.print("a:");
-  //Serial.print(Acceleration);
-  //Serial.print(",");
-  //Serial.print("d:");
-  //Serial.println(Deceleration);
   pos.l = targetPos;
   vel.l = maxVelocity;
   acc.l = Acceleration;
@@ -282,6 +249,84 @@ void send_VAI_gotoPos(int nodeID, long targetPos,unsigned long maxVelocity,unsig
   byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0],pos.b[0],pos.b[1],pos.b[2],pos.b[3]};
   byte sendDataArray_PDO2[] = {vel.b[0],vel.b[1],vel.b[2],vel.b[3],acc.b[0],acc.b[1],acc.b[2],acc.b[3]};
   byte sendDataArray_PDO3[] = {dacc.b[0],dacc.b[1],dacc.b[2],dacc.b[3], 0x00, 0x00, 0x00, 0x00};
+
+  //Sending the data with sync message at the end
+  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
+  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);
+  send_Msg(CANID_PDO3, 0, 8, sendDataArray_PDO3);    
+  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+}
+void send_VAI_gotoPosAndResetForceControl(int nodeID, long targetPos,unsigned long maxVelocity,unsigned long Acceleration, unsigned long Deceleration){
+  pos.l = targetPos;
+  vel.l = maxVelocity;
+  acc.l = Acceleration;
+  dacc.l = Deceleration;
+
+  //Setting the canid, header and control word
+  int CANID_PDO1 = 0x200 + nodeID;   //Can_id = COB_ID + node_ID(200 + 4  for pdo1)   Here you send the control word, mc-header, target position and maximum velocity
+  int CANID_PDO2 = 0x300 + nodeID;   //Can_id = COB_ID + node_ID(300 + 4  for pdo2)   Here you send maximum velocity
+  int CANID_PDO3 = 0x400 + nodeID;   //Can_id = COB_ID + node_ID(400 + 4  for pdo3)   Here you send Acceleration and Deceleration
+  byte cmdHeader[] = {0x38, 0x11};
+  byte ctrlWord[] = {0x00,0x3f};
+
+  byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
+  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+
+  //creating the array of data to be transmitted
+  byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0],pos.b[0],pos.b[1],pos.b[2],pos.b[3]};
+  byte sendDataArray_PDO2[] = {vel.b[0],vel.b[1],vel.b[2],vel.b[3],acc.b[0],acc.b[1],acc.b[2],acc.b[3]};
+  byte sendDataArray_PDO3[] = {dacc.b[0],dacc.b[1],dacc.b[2],dacc.b[3], 0x00, 0x00, 0x00, 0x00};
+
+  //Sending the data with sync message at the end
+  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
+  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);
+  send_Msg(CANID_PDO3, 0, 8, sendDataArray_PDO3);    
+  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+}
+void Force_Ctrl_ChangeTargetForce(int nodeID, int targetForce){
+  //Setting the canid, header and control word
+  int CANID_PDO1 = 0x200 + nodeID;   //Can_id = COB_ID + node_ID(200 + 4  for pdo1)   Here you send the control word, mc-header, target position and maximum velocity
+  int CANID_PDO2 = 0x300 + nodeID;   //Can_id = COB_ID + node_ID(300 + 4  for pdo2)   Here you send maximum velocity
+  int CANID_PDO3 = 0x400 + nodeID;   //Can_id = COB_ID + node_ID(400 + 4  for pdo3)   Here you send Acceleration and Deceleration
+  byte cmdHeader[] = {0x38, 0x22};
+  byte ctrlWord[] = {0x00,0x3f};
+
+  byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
+  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+
+  //creating the array of data to be transmitted
+  byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0], lowByte(targetForce), highByte(targetForce), 0x00, 0x00};
+  byte sendDataArray_PDO2[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+  //Sending the data with sync message at the end
+  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
+  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);
+  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+}
+void send_VAI_gotoPosWithHigherForceCtrlLimitandTargetForce(int nodeID, long targetPos,unsigned long maxVelocity,unsigned long Acceleration, unsigned long Deceleration, int forceLimit, int targetForce){
+  pos.l = targetPos;
+  vel.l = maxVelocity;
+  acc.l = Acceleration;
+  dacc.l = Deceleration;
+  
+
+  //Setting the canid, header and control word
+  int CANID_PDO1 = 0x200 + nodeID;   //Can_id = COB_ID + node_ID(200 + 4  for pdo1)   Here you send the control word, mc-header, target position and maximum velocity
+  int CANID_PDO2 = 0x300 + nodeID;   //Can_id = COB_ID + node_ID(300 + 4  for pdo2)   Here you send maximum velocity
+  int CANID_PDO3 = 0x400 + nodeID;   //Can_id = COB_ID + node_ID(400 + 4  for pdo3)   Here you send Acceleration and Deceleration
+  byte cmdHeader[] = {0x38, 0x31};
+  byte ctrlWord[] = {0x00,0x3f};
+
+  byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
+  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+
+  //creating the array of data to be transmitted
+  byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0],pos.b[0],pos.b[1],pos.b[2],pos.b[3]};
+  byte sendDataArray_PDO2[] = {vel.b[0],vel.b[1],vel.b[2],vel.b[3],acc.b[0],acc.b[1],acc.b[2],acc.b[3]};
+  byte sendDataArray_PDO3[] = {lowByte(forceLimit), highByte(forceLimit), lowByte(targetForce), highByte(targetForce),0x00,0x00,0x00,0x00};
 
   //Sending the data with sync message at the end
   send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
@@ -474,6 +519,15 @@ void loop() {
         //Serial.println(F("Getting position.."));
         askPosition(0x04);  
       }
+      if(choice == 7){
+        send_VAI_gotoPosAndResetForceControl(0x04, targetPos, maxVel, Acceleration, Deceleration);  
+      }
+      if(choice == 10){
+        Force_Ctrl_ChangeTargetForce(0x04, targetForce);  
+      }
+      if(choice == 11){
+        send_VAI_gotoPosWithHigherForceCtrlLimitandTargetForce(0x04, targetPos, maxVel,Acceleration, Deceleration, forceLimit, targetForce);
+      }
       if(choice == 1 && prevChoice != 1){
         prevChoice = choice;
         Serial.println(F("operational mode.."));
@@ -497,26 +551,5 @@ void loop() {
       //Serial.println(statusWord, HEX);
       sendUdp(returnFloatPos, statusWord);       
     }
-    
-//    if(len != 0){
-//      if((rxId & 0x80000000) == 0x80000000)     // Determine if ID is standard (11 bits) or extended (29 bits)
-//        sprintf(msgString, "Extended ID: 0x%.8lX  DLC: %1d  Data:", (rxId & 0x1FFFFFFF), len);
-//      else
-//        sprintf(msgString, "Receive Standard ID: 0x%.3lX  DLC: %1d  Data:", rxId, len);
-//    
-//      Serial.print(msgString);
-//    
-//      if((rxId & 0x40000000) == 0x40000000){    // Determine if message is a remote request frame.
-//        sprintf(msgString, " REMOTE REQUEST FRAME");
-//        Serial.print(msgString);
-//      } else {
-//        for(byte i = 0; i<len; i++){
-//          sprintf(msgString, " 0x%.2X", rxBuf[i]);
-//          Serial.print(msgString);
-//        }
-//      }          
-//      Serial.println();
-//      len = 0;
-//    }
   }
 }
