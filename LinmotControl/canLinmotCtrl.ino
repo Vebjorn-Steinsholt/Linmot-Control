@@ -3,6 +3,7 @@
 //NTNU - Norwegian University of Science and Technology
 //Version 1.1
 //Features added by Vebjørn Steinsholt
+//Added force control
 //NTNU - Norwegian University of Science and Technology
 #include <mcp_can.h>    //Using this library for the canbus communication
 #include <SPI.h>
