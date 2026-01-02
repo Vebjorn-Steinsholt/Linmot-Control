@@ -1,7 +1,7 @@
 //Linmot Serial2CAN-BUS Controller
 //Robert Opland
 //NTNU - Norwegian University of Science and Technology
-//Version 1.1
+//Version 1.2
 //Features added by Vebjørn Steinsholt
 //Added force control
 //NTNU - Norwegian University of Science and Technology
@@ -52,7 +52,7 @@ unsigned_long_pack dacc;
 
 
 //Function to listen to Serial messages:__________________________________________
-int listenToSerial(){
+bool listenToSerial(){
   
   // Check if a complete line is available
   if (Serial.available() > 0) {
@@ -60,12 +60,12 @@ int listenToSerial(){
     line.trim(); // Remove any whitespace
     
     if (line.length() == 0) {
-      return 0;
+      return false;
     }
     
     // Debug: uncomment to see received data
-    Serial.print(F("Received: "));
-    Serial.println(line);
+    // Serial.print(F("Received: "));
+    // Serial.println(line);
     
     // Parse CSV format: choice,targetPos,maxVel,acc,dec,targetForce,forceLimit
     int commaIndex[6];
@@ -78,48 +78,52 @@ int listenToSerial(){
       }
     }
     
-    // Need at least 6 commas for 7 fields
-    if (fieldCount < 6) {
-      return 0; // Invalid format
+    // Validate: need exactly 6 commas for 7 fields
+    if (fieldCount != 6) {
+      Serial.print(F("Error: Invalid format, expected 7 fields, found "));
+      Serial.println(fieldCount + 1);
+      return false;
     }
     
-    // Parse each field
-    float packetVal_1 = line.substring(0, commaIndex[0]).toFloat();
-    float packetVal_2 = line.substring(commaIndex[0] + 1, commaIndex[1]).toFloat();
-    float packetVal_3 = line.substring(commaIndex[1] + 1, commaIndex[2]).toFloat();
-    float packetVal_4 = line.substring(commaIndex[2] + 1, commaIndex[3]).toFloat();
-    float packetVal_5 = line.substring(commaIndex[3] + 1, commaIndex[4]).toFloat();
-    float packetVal_6 = line.substring(commaIndex[4] + 1, commaIndex[5]).toFloat();
-    float packetVal_7 = line.substring(commaIndex[5] + 1).toFloat();
+    // Parse each field - convert directly to appropriate types
+    // Field 1: choice (integer 1-11)
+    choice = line.substring(0, commaIndex[0]).toInt();
     
-    //Scaling variables from Serial to make some common sense: pos=mm, V=m/s, acc/dcc=m/s^2. These are the units you send from Serial source
-    choice        = packetVal_1;          //Valid choices: 1-11
-    targetPos     = packetVal_2*10000;       //Wanted position in millimeters
-    maxVel        = packetVal_3*1000000;     //Maximum velocity in m/s
-    Acceleration  = packetVal_4*100000;       //Acceleration in m/s^2
-    Deceleration  = packetVal_5*100000;       //Deceleration in m/s^2
-    targetForce   = packetVal_6*10;          //Target force
-    forceLimit    = packetVal_7*10;          //Force limit
+    // Field 2: targetPos in mm (convert to internal units: mm * 10000)
+    float targetPos_mm = line.substring(commaIndex[0] + 1, commaIndex[1]).toFloat();
+    targetPos = (long)(targetPos_mm * 10000.0f);
+    
+    // Field 3: maxVel in m/s (convert to internal units: m/s * 1000000)
+    float maxVel_ms = line.substring(commaIndex[1] + 1, commaIndex[2]).toFloat();
+    maxVel = (unsigned long)(maxVel_ms * 1000000.0f);
+    
+    // Field 4: Acceleration in m/s² (convert to internal units: m/s² * 100000)
+    float acc_ms2 = line.substring(commaIndex[2] + 1, commaIndex[3]).toFloat();
+    Acceleration = (unsigned long)(acc_ms2 * 100000.0f);
+    
+    // Field 5: Deceleration in m/s² (convert to internal units: m/s² * 100000)
+    float dec_ms2 = line.substring(commaIndex[3] + 1, commaIndex[4]).toFloat();
+    Deceleration = (unsigned long)(dec_ms2 * 100000.0f);
+    
+    // Field 6: targetForce (convert to internal units: * 10)
+    float targetForce_raw = line.substring(commaIndex[4] + 1, commaIndex[5]).toFloat();
+    targetForce = (int)(targetForce_raw * 10.0f);
+    
+    // Field 7: forceLimit (convert to internal units: * 10)
+    float forceLimit_raw = line.substring(commaIndex[5] + 1).toFloat();
+    forceLimit = (int)(forceLimit_raw * 10.0f);
+    
+    // Validate choice range
+    if (choice < 1 || choice > 11) {
+      Serial.print(F("Warning: Invalid choice value "));
+      Serial.print(choice);
+      Serial.println(F(", expected 1-11"));
+      return false;
+    }
 
-    // Debug: uncomment to see parsed values
-    Serial.print(F("Parsed - Choice: "));
-    Serial.print(choice);
-    Serial.print(F(", Pos: "));
-    Serial.print(packetVal_2);
-    Serial.print(F("mm, Vel: "));
-    Serial.print(packetVal_3);
-    Serial.print(F("m/s, Acc: "));
-    Serial.print(packetVal_4);
-    Serial.print(F(", Dec: "));
-    Serial.print(packetVal_5);
-    Serial.print(F(", Force: "));
-    Serial.print(packetVal_6);
-    Serial.print(F(", Limit: "));
-    Serial.println(packetVal_7);
-
-    return line.length();        
+    return true;        
   }
-  return 0;
+  return false;
 }
 
 //Function to send Serial messages___________________________________________________
@@ -141,13 +145,35 @@ void send_Msg(int Can_Id, int ExtID, int dL, byte dataArray[]){
   byte sndStat = CAN0.sendMsgBuf(CANID, external, dataLength, msgData);
 }
 
+//Helper function to send sync message
+void sendSync(){
+  CAN0.sendMsgBuf(0x80, 0, 0, 0);
+}
+
+//Helper function to send PDO messages (pdo2 and pdo3 are optional, pass nullptr if not needed)
+void sendPDO(int nodeID, byte* pdo1, byte* pdo2, byte* pdo3){
+  if (pdo1 != nullptr) {
+    int CANID_PDO1 = 0x200 + nodeID;
+    send_Msg(CANID_PDO1, 0, 8, pdo1);
+  }
+  if (pdo2 != nullptr) {
+    int CANID_PDO2 = 0x300 + nodeID;
+    send_Msg(CANID_PDO2, 0, 8, pdo2);
+  }
+  if (pdo3 != nullptr) {
+    int CANID_PDO3 = 0x400 + nodeID;
+    send_Msg(CANID_PDO3, 0, 8, pdo3);
+  }
+  sendSync();
+}
+
 //Get position from actuator
 void askPosition(int nodeID){
   int CANID_TPDO1 = 0x180 + nodeID;
 
   byte sendDataArray_TPDO1[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00};
   send_Msg(CANID_TPDO1, 0, 8, sendDataArray_TPDO1);
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendSync();
 }
 
 //Function to send setpoint to drive
@@ -160,16 +186,14 @@ void send_VAI_16Bit_gotoPos(int nodeID, int targetPos,int maxVelocity,int Accele
 
   byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendSync();
 
   //creating the array of data to be transmitted
   byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0], lowByte(targetPos), highByte(targetPos), lowByte(maxVelocity), highByte(maxVelocity)};
   byte sendDataArray_PDO2[] = {lowByte(Acceleration), highByte(Acceleration), lowByte(Deceleration), highByte(Deceleration), 0x00, 0x00, 0x00, 0x00};
 
   //Sending the data with sync message at the end
-  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
-  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);  
-  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendPDO(nodeID, sendDataArray_PDO1, sendDataArray_PDO2, nullptr);
 }
 
 //Function to send setpoint to drive
@@ -188,7 +212,7 @@ void send_VAI_gotoPos(int nodeID, long targetPos,unsigned long maxVelocity,unsig
 
   byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendSync();
 
   //creating the array of data to be transmitted
   byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0],pos.b[0],pos.b[1],pos.b[2],pos.b[3]};
@@ -196,10 +220,7 @@ void send_VAI_gotoPos(int nodeID, long targetPos,unsigned long maxVelocity,unsig
   byte sendDataArray_PDO3[] = {dacc.b[0],dacc.b[1],dacc.b[2],dacc.b[3], 0x00, 0x00, 0x00, 0x00};
 
   //Sending the data with sync message at the end
-  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
-  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);
-  send_Msg(CANID_PDO3, 0, 8, sendDataArray_PDO3);    
-  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendPDO(nodeID, sendDataArray_PDO1, sendDataArray_PDO2, sendDataArray_PDO3);
 }
 void send_VAI_gotoPosAndResetForceControl(int nodeID, long targetPos,unsigned long maxVelocity,unsigned long Acceleration, unsigned long Deceleration){
   pos.l = targetPos;
@@ -216,7 +237,7 @@ void send_VAI_gotoPosAndResetForceControl(int nodeID, long targetPos,unsigned lo
 
   byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendSync();
 
   //creating the array of data to be transmitted
   byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0],pos.b[0],pos.b[1],pos.b[2],pos.b[3]};
@@ -224,10 +245,7 @@ void send_VAI_gotoPosAndResetForceControl(int nodeID, long targetPos,unsigned lo
   byte sendDataArray_PDO3[] = {dacc.b[0],dacc.b[1],dacc.b[2],dacc.b[3], 0x00, 0x00, 0x00, 0x00};
 
   //Sending the data with sync message at the end
-  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
-  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);
-  send_Msg(CANID_PDO3, 0, 8, sendDataArray_PDO3);    
-  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendPDO(nodeID, sendDataArray_PDO1, sendDataArray_PDO2, sendDataArray_PDO3);
 }
 void Force_Ctrl_ChangeTargetForce(int nodeID, int targetForce){
   //Setting the canid, header and control word
@@ -239,16 +257,14 @@ void Force_Ctrl_ChangeTargetForce(int nodeID, int targetForce){
 
   byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendSync();
 
   //creating the array of data to be transmitted
   byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0], lowByte(targetForce), highByte(targetForce), 0x00, 0x00};
   byte sendDataArray_PDO2[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
   //Sending the data with sync message at the end
-  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
-  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);
-  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendPDO(nodeID, sendDataArray_PDO1, sendDataArray_PDO2, nullptr);
 }
 void send_VAI_gotoPosWithHigherForceCtrlLimitandTargetForce(int nodeID, long targetPos,unsigned long maxVelocity,unsigned long Acceleration, unsigned long Deceleration, int forceLimit, int targetForce){
   pos.l = targetPos;
@@ -266,7 +282,7 @@ void send_VAI_gotoPosWithHigherForceCtrlLimitandTargetForce(int nodeID, long tar
 
   byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendSync();
 
   //creating the array of data to be transmitted
   byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0],pos.b[0],pos.b[1],pos.b[2],pos.b[3]};
@@ -274,32 +290,8 @@ void send_VAI_gotoPosWithHigherForceCtrlLimitandTargetForce(int nodeID, long tar
   byte sendDataArray_PDO3[] = {lowByte(forceLimit), highByte(forceLimit), lowByte(targetForce), highByte(targetForce),0x00,0x00,0x00,0x00};
 
   //Sending the data with sync message at the end
-  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
-  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);
-  send_Msg(CANID_PDO3, 0, 8, sendDataArray_PDO3);    
-  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendPDO(nodeID, sendDataArray_PDO1, sendDataArray_PDO2, sendDataArray_PDO3);
 }
-//Function to send sine motion command to drive
-void send_SIN_VA_GoToPos(int nodeID, long targetPos,long maxVelocity, long Acceleration, long Deceleration){
-  
-  //Setting the canid, header and control word
-  int CANID_PDO1 = 0x200 + nodeID;   //Can_id = COB_ID + node_ID(200 + 4  for pdo1)   PDO1 is the 0x200 series
-  int CANID_PDO2 = 0x300 + nodeID;   //Can_id = COB_ID + node_ID(300 + 4  for pdo2)   PDO2 is the 0x300 series
-  byte cmdHeader[] = {0x0E, 0x04};
-  byte ctrlWord[] = {0x00,0x3f};
-
-  //creating the array of data to be transmitted
-  byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};    //Message to enter operational state
-  byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0], highByte(targetPos), lowByte(targetPos), highByte(maxVelocity), lowByte(maxVelocity)};  //Message to send data to PDO1(header, target pos, max velocity)
-  byte sendDataArray_PDO2[] = {highByte(Acceleration), lowByte(Acceleration), highByte(Deceleration), lowByte(Deceleration), 0x00, 0x00, 0x00, 0x00};  //Message to send data to PDO2 (acceleration and deceleration)
-
-  //Sending the data with sync message at the end
-  send_Msg(CANID_PDO1, 0, 8, sendDataArray_2);
-  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
-  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);  
-  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command    
-}
-
 //Function to send new setpoint to drive before reaching the previous setpoint
 void send_VAI_goToPosFromActPos(int nodeID, int targetPos,int maxVelocity,int Acceleration,int Deceleration){
   
@@ -311,30 +303,28 @@ void send_VAI_goToPosFromActPos(int nodeID, int targetPos,int maxVelocity,int Ac
 
   byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_Msg(CANID_PDO1, 0, 8, sendDataArray_2); 
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendSync();
 
   //creating the array of data to be transmitted
   byte sendDataArray_PDO1[] = {ctrlWord[1],ctrlWord[0], cmdHeader[1],cmdHeader[0], lowByte(targetPos), highByte(targetPos), lowByte(maxVelocity), highByte(maxVelocity)};
   byte sendDataArray_PDO2[] = {lowByte(Acceleration), highByte(Acceleration), lowByte(Deceleration), highByte(Deceleration), 0x00, 0x00, 0x00, 0x00};
 
   //Sending the data with sync message at the end
-  send_Msg(CANID_PDO1, 0, 8, sendDataArray_PDO1);
-  send_Msg(CANID_PDO2, 0, 8, sendDataArray_PDO2);  
-  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendPDO(nodeID, sendDataArray_PDO1, sendDataArray_PDO2, nullptr);
 }
 
 //Function to home actuator
 void sendHoming(){
   byte sendDataArray_PDO1[] = {0x3f, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};  //Homing control word = 0x083f
   send_Msg(0x204, 0, 8, sendDataArray_PDO1);
-  byte sndSync = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendSync();
 }
 
 //Function to put drive in operational mode
 void operationalMode(){
   byte sendDataArray[] = {0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};            //0x01 is the command for putting device in operational mode, and 0x04 is the node-ID
   send_Msg(0x000, 0, 2, sendDataArray);  
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command
+  sendSync();
 }
 
 
@@ -342,14 +332,14 @@ void operationalMode(){
 void switchOn(){
   byte sendDataArray_2[] = {0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_Msg(0x204, 0, 8, sendDataArray_2); 
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command  
+  sendSync();
 }
 
 //Function to switch off
 void switchOff(){
   byte sendDataArray_2[] = {0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   send_Msg(0x204, 0, 8, sendDataArray_2); 
-  byte sndSync2 = CAN0.sendMsgBuf(0x80, 0, 0, 0);   //Sending sync message to actually get the linmot drive to accept/run command  
+  sendSync();
 }
 
 //_______________________________________________SETUP_____________________________________________________________________
@@ -362,7 +352,7 @@ void setup() {
   //CANBUS SETUP******
   pinMode(CAN0_INT, INPUT);     // Configuring pin for /INT input
   
-  // Initialize MCP2515 running at 16MHz with a baudrate of (500kb/s) and the masks and filters disabled.
+  // Initialize MCP2515 ng at 16MHz with a baudrate of (500kb/s) and the masks and filters disabled.
   if(CAN0.begin(MCP_ANY, CAN_500KBPS, MCP_16MHZ) == CAN_OK){ 
     Serial.println(F("MCP2515 Initialized Successfully!"));
   }else{ 
@@ -374,81 +364,123 @@ void setup() {
     }
   }
 
+  // Explicitly disable filters to receive all messages (MUST be done BEFORE setMode)
+  CAN0.init_Mask(0, 0, 0x00000000);
+  CAN0.init_Mask(1, 0, 0x00000000);
+  CAN0.init_Filt(0, 0, 0x00000000);
+  CAN0.init_Filt(1, 0, 0x00000000);
+  CAN0.init_Filt(2, 0, 0x00000000);
+  CAN0.init_Filt(3, 0, 0x00000000);
+  CAN0.init_Filt(4, 0, 0x00000000);
+  CAN0.init_Filt(5, 0, 0x00000000);
+
   CAN0.setMode(MCP_NORMAL);   // Change to normal mode to allow messages to be transmitted
+  Serial.println(F("CAN set to NORMAL mode"));
+  Serial.println(F("Waiting for motor CAN messages..."));
 
   Serial.println(F("SETUP..OK"));
 }
 
 //_________________________________________________________MAIN__________________________________________________________
 void loop() {
-  
-  if(listenToSerial() != 0){
-      
-      if(choice == 9 && prevChoice != 9){
-        prevChoice = choice;
-        Serial.println(F("operational mode.."));
-        operationalMode();  
-      }
-      if(choice == 2 && prevChoice != 2){
-        prevChoice = choice;
-        Serial.println(F("homing.."));
-        sendHoming();  
-      }
-      if(choice == 3){
-        prevChoice = choice;
-        //Serial.println(F("go to pos..."));
-        send_VAI_gotoPos(0x04, targetPos, maxVel, Acceleration, Deceleration);  
-      }
-      if(choice == 4 && prevChoice != 4){
-        prevChoice = choice;
-        Serial.println(F("switch on drive.."));
-        switchOn();  
-      }
-      if(choice == 5 && prevChoice != 5){
-        prevChoice = choice;
-        Serial.println(F("switch off drive.."));
-        switchOff();  
-      }
-      if(choice == 8 && prevChoice != 8){
-        prevChoice = choice;
-        send_SIN_VA_GoToPos(0x04, targetPos, maxVel, Acceleration, Deceleration);  
-      }
-      if(choice == 6){
-        prevChoice = choice;
-        //Serial.println(F("Getting position.."));
-        askPosition(0x04);  
-      }
-      if(choice == 7){
-        send_VAI_gotoPosAndResetForceControl(0x04, targetPos, maxVel, Acceleration, Deceleration);  
-      }
-      if(choice == 10){
-        Force_Ctrl_ChangeTargetForce(0x04, targetForce);  
-      }
-      if(choice == 11){
-        send_VAI_gotoPosWithHigherForceCtrlLimitandTargetForce(0x04, targetPos, maxVel,Acceleration, Deceleration, forceLimit, targetForce);
-      }
-      if(choice == 1 && prevChoice != 1){
-        prevChoice = choice;
-        Serial.println(F("operational mode.."));
-        operationalMode();  
-      } 
-  }
 
-  if(!digitalRead(CAN0_INT)){                         // If CAN0_INT pin is low, read receive buffer
-    CAN0.readMsgBuf(&rxId, &len, rxBuf);      // Read data: len = data length, buf = data byte(s)
-    if(rxId == 0x184){
-      long int actualPos = 0;
-      actualPos += ((long int) rxBuf[7] << 24);
-      actualPos += ((long int) rxBuf[6] << 16);
-      actualPos += ((long int) rxBuf[5] << 8);
-      actualPos += ((long int) rxBuf[4]);
-      returnFloatPos = actualPos/10000.0f;
+    if (listenToSerial() != 0) {
 
-      long int statusWord = 0;
-      statusWord += ((long int) rxBuf[1] << 8);
-      statusWord += ((long int) rxBuf[0]);
-      //Serial.println(statusWord, HEX);
-      sendSerial(returnFloatPos, statusWord);       
+        switch (choice) {
+
+            // -------- ONE-SHOT COMMANDS --------
+            case 1:
+            case 9:
+                if (prevChoice != choice) {
+                    Serial.println(F("operational mode.."));
+                    operationalMode();
+                    prevChoice = choice;
+                }
+                break;
+
+            case 2:
+                if (prevChoice != 2) {
+                    Serial.println(F("homing.."));
+                    sendHoming();
+                    prevChoice = 2;
+                }
+                break;
+
+            case 4:
+                if (prevChoice != 4) {
+                    Serial.println(F("switch on drive.."));
+                    switchOn();
+                    prevChoice = 4;
+                }
+                break;
+
+            case 5:
+                if (prevChoice != 5) {
+                    Serial.println(F("switch off drive.."));
+                    switchOff();
+                    prevChoice = 5;
+                }
+                break;
+
+            // -------- REPEATING COMMANDS --------
+            case 3:
+                Serial.println(F("go to position..."));
+                send_VAI_gotoPos(0x04, targetPos, maxVel, Acceleration, Deceleration);
+                break;
+
+            case 6:
+                Serial.println(F("getting position..."));
+                askPosition(0x04);
+                break;
+
+            case 7:
+                Serial.println(F("go to position with force ctrl reset..."));
+                send_VAI_gotoPosAndResetForceControl(0x04, targetPos, maxVel, Acceleration, Deceleration);
+                break;
+
+            case 10:
+                Serial.println(F("changing target force..."));
+                Force_Ctrl_ChangeTargetForce(0x04, targetForce);
+                break;
+
+            case 11:
+                Serial.println(F("go to position with force control..."));
+                send_VAI_gotoPosWithHigherForceCtrlLimitandTargetForce(
+                    0x04, targetPos, maxVel, Acceleration, Deceleration, forceLimit, targetForce
+                );
+                break;
+
+            default:
+                break;
+        }
     }
-  }
+
+    if (!digitalRead(CAN0_INT)) {
+
+        CAN0.readMsgBuf(&rxId, &len, rxBuf);
+
+        // Filter out invalid messages (ID 0x0 with length 0)
+        if (rxId == 0x0 && len == 0) {
+            // Ignore - likely error frame or noise
+            return;
+        }
+
+        // Only process position feedback (0x184)
+        if (rxId == 0x184) {
+
+            long int actualPos = 0;
+            actualPos |= ((long int)rxBuf[7] << 24);
+            actualPos |= ((long int)rxBuf[6] << 16);
+            actualPos |= ((long int)rxBuf[5] << 8);
+            actualPos |= ((long int)rxBuf[4]);
+
+            returnFloatPos = actualPos / 10000.0f;
+
+            long int statusWord = 0;
+            statusWord |= ((long int)rxBuf[1] << 8);
+            statusWord |= ((long int)rxBuf[0]);
+
+            sendSerial(returnFloatPos, statusWord);
+        }
+    }
 }
